@@ -234,14 +234,9 @@ class Broodle_Engage_Connector {
      * Check DB version and run upgrades if needed
      */
     public function check_db_version() {
-        // Ensure logger class is available (not loaded yet during activation)
-        if ( ! class_exists( 'Broodle_Engage_Logger' ) ) {
-            require_once BROODLE_ENGAGE_PLUGIN_DIR . 'includes/class-broodle-engage-logger.php';
-        }
-        
         $installed_version = get_option( 'broodle_engage_db_version' );
         if ( $installed_version !== BROODLE_ENGAGE_DB_VERSION ) {
-            Broodle_Engage_Logger::create_tables();
+            $this->create_tables();
             update_option( 'broodle_engage_db_version', BROODLE_ENGAGE_DB_VERSION );
         }
     }

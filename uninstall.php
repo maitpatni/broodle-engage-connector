@@ -21,7 +21,7 @@ delete_transient( 'broodle_engage_rate_limit_info' );
 
 // Delete notification logs table
 global $wpdb;
-$table_name = $wpdb->prefix . 'broodle_engage_notifications';
+$table_name = $wpdb->prefix . 'broodle_engage_logs';
 $wpdb->query( "DROP TABLE IF EXISTS {$table_name}" );
 
 // Delete order meta for all orders
