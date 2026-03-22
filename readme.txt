@@ -4,7 +4,7 @@ Tags: woocommerce, whatsapp, notifications, order notifications, whatsapp busine
 Requires at least: 5.0
 Tested up to: 6.9
 Requires PHP: 7.4
-Stable tag: 3.1.1
+Stable tag: 3.2.3
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -161,6 +161,9 @@ The plugin checks GitHub for new releases and shows update notifications in your
 
 == Changelog ==
 
+= 3.2.3 =
+* Added defined() guards to all plugin constants to prevent "Constant already defined" errors
+
 = 3.1.1 =
 * Fixed log timezone display — times now correctly show in WordPress site timezone
 * Moved Sign Up and Login links after Deactivate on plugins page
@@ -217,6 +220,9 @@ The plugin checks GitHub for new releases and shows update notifications in your
 * Phone number validation and formatting
 
 == Upgrade Notice ==
+
+= 3.2.3 =
+Prevents "Constant already defined" PHP errors. Recommended update.
 
 = 3.1.1 =
 Timezone fix for logs display. Recommended update for all users.

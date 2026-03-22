@@ -3,7 +3,7 @@
  * Plugin Name: Broodle Engage Connector
  * Plugin URI: https://broodle.host/engage
  * Description: Send WooCommerce order notifications to customers via WhatsApp using Broodle WhatsApp API. Supports order received, shipped, delivered, and failed/cancelled notifications.
- * Version: 3.1.1
+ * Version: 3.2.3
  * Author: Broodle
  * Author URI: https://broodle.host
  * Text Domain: broodle-engage-connector
@@ -25,14 +25,24 @@ if ( ! defined( 'ABSPATH' ) ) {
 }
 
 // Define plugin constants
-define( 'BROODLE_ENGAGE_VERSION', '3.1.1' );
-define( 'BROODLE_ENGAGE_PLUGIN_FILE', __FILE__ );
-define( 'BROODLE_ENGAGE_PLUGIN_DIR', plugin_dir_path( __FILE__ ) );
-define( 'BROODLE_ENGAGE_PLUGIN_URL', plugin_dir_url( __FILE__ ) );
-define( 'BROODLE_ENGAGE_PLUGIN_BASENAME', plugin_basename( __FILE__ ) );
-
-// DB version for migrations
-define( 'BROODLE_ENGAGE_DB_VERSION', '1.0' );
+if ( ! defined( 'BROODLE_ENGAGE_VERSION' ) ) {
+    define( 'BROODLE_ENGAGE_VERSION', '3.2.3' );
+}
+if ( ! defined( 'BROODLE_ENGAGE_PLUGIN_FILE' ) ) {
+    define( 'BROODLE_ENGAGE_PLUGIN_FILE', __FILE__ );
+}
+if ( ! defined( 'BROODLE_ENGAGE_PLUGIN_DIR' ) ) {
+    define( 'BROODLE_ENGAGE_PLUGIN_DIR', plugin_dir_path( __FILE__ ) );
+}
+if ( ! defined( 'BROODLE_ENGAGE_PLUGIN_URL' ) ) {
+    define( 'BROODLE_ENGAGE_PLUGIN_URL', plugin_dir_url( __FILE__ ) );
+}
+if ( ! defined( 'BROODLE_ENGAGE_PLUGIN_BASENAME' ) ) {
+    define( 'BROODLE_ENGAGE_PLUGIN_BASENAME', plugin_basename( __FILE__ ) );
+}
+if ( ! defined( 'BROODLE_ENGAGE_DB_VERSION' ) ) {
+    define( 'BROODLE_ENGAGE_DB_VERSION', '1.0' );
+}
 
 /**
  * Main plugin class
@@ -158,35 +168,6 @@ class Broodle_Engage_Connector {
 
 
     /**
-     * Clean up any duplicate shipped statuses created by this plugin
-     */
-    public function cleanup_duplicate_statuses() {
-        // Only run if WooCommerce is active
-        if ( ! $this->is_woocommerce_active() ) {
-            return;
-        }
-
-        // IMPORTANT: Do not remove existing shipped statuses as this can hide orders
-        // The plugin should work with existing statuses, not remove them
-        // This function is kept for compatibility but disabled to prevent order visibility issues
-
-        // Original problematic code commented out:
-        /*
-        global $wp_post_statuses;
-
-        if ( isset( $wp_post_statuses['wc-shipped'] ) ) {
-            // Check if this was created by our plugin (not by another plugin)
-            $status_obj = $wp_post_statuses['wc-shipped'];
-
-            // Only remove if it looks like our basic registration
-            if ( isset( $status_obj->label ) && $status_obj->label === 'Shipped' ) {
-                unset( $wp_post_statuses['wc-shipped'] );
-            }
-        }
-        */
-    }
-
-    /**
      * Add settings link to plugins page
      *
      * @param array $links Plugin action links.
@@ -245,8 +226,9 @@ class Broodle_Engage_Connector {
      * Plugin deactivation
      */
     public function deactivate() {
-        // Clear scheduled cron
+        // Clear scheduled crons
         wp_clear_scheduled_hook( 'broodle_engage_cleanup_logs' );
+        wp_clear_scheduled_hook( 'broodle_engage_send_delayed_notification' );
     }
 
     /**
