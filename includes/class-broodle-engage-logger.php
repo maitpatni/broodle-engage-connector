@@ -41,7 +41,7 @@ class Broodle_Engage_Logger {
      * @param string $error_message Error message.
      * @return int|false Log ID on success, false on failure.
      */
-    public static function log( $order_id, $phone_number, $template_name, $status, $response_data = array(), $api_response = array(), $error_message = '' ) {
+    public static function log( $order_id, $phone_number, $template_name, $status, $response_data = array(), $api_response = array(), $error_message = '', $notification_type = null ) {
         global $wpdb;
 
         $table_name = $wpdb->prefix . self::TABLE_NAME;
@@ -54,10 +54,11 @@ class Broodle_Engage_Logger {
             'response_data' => wp_json_encode( $response_data ),
             'api_response' => wp_json_encode( $api_response ),
             'error_message' => sanitize_textarea_field( $error_message ),
+            'notification_type' => ! empty( $notification_type ) ? sanitize_key( $notification_type ) : null,
             'created_at' => current_time( 'mysql' ),
         );
 
-        $formats = array( '%d', '%s', '%s', '%s', '%s', '%s', '%s', '%s' );
+        $formats = array( '%d', '%s', '%s', '%s', '%s', '%s', '%s', '%s', '%s' );
 
         // STABILITY: Safely handle database operations
         try {
@@ -279,20 +280,33 @@ class Broodle_Engage_Logger {
      * @param string $template_name Template name.
      * @return bool
      */
-    public static function is_notification_sent( $order_id, $template_name ) {
+    public static function is_notification_sent( $order_id, $template_name, $notification_type = null ) {
         global $wpdb;
 
         $table_name = $wpdb->prefix . self::TABLE_NAME;
 
+        // Build query with optional notification_type check
+        // This prevents duplicate notifications for the same order AND notification type
+        // even if they use the same template name
+        $sql = "SELECT COUNT(*) FROM `" . esc_sql( $table_name ) . "` WHERE order_id = %d AND status = %s";
+        $params = array( absint( $order_id ), self::LOG_SUCCESS );
+        
+        // Also check template_name if provided (for backward compatibility)
+        if ( ! empty( $template_name ) ) {
+            $sql .= " AND template_name = %s";
+            $params[] = sanitize_text_field( $template_name );
+        }
+        
+        // Check notification_type if provided - this ensures different notification types
+        // don't block each other even when using the same template
+        if ( ! empty( $notification_type ) ) {
+            $sql .= " AND notification_type = %s";
+            $params[] = sanitize_key( $notification_type );
+        }
+
         // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
         $count = $wpdb->get_var(
-            $wpdb->prepare(
-                // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
-                "SELECT COUNT(*) FROM `" . esc_sql( $table_name ) . "` WHERE order_id = %d AND template_name = %s AND status = %s",
-                absint( $order_id ),
-                sanitize_text_field( $template_name ),
-                self::LOG_SUCCESS
-            )
+            $wpdb->prepare( $sql, $params )
         );
 
         return $count > 0;
@@ -371,7 +385,7 @@ class Broodle_Engage_Logger {
             'status' => 'scheduled',
         );
 
-        return self::log( $order_id, $phone, $notification_type, self::LOG_SCHEDULED, $response_data, array(), $message );
+        return self::log( $order_id, $phone, '', self::LOG_SCHEDULED, $response_data, array(), $message, $notification_type );
     }
 
     /**

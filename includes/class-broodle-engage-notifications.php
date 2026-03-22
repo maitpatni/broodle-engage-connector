@@ -54,20 +54,15 @@ class Broodle_Engage_Notifications {
             $hpos_enabled = class_exists( 'Automattic\WooCommerce\Utilities\OrderUtil' ) &&
                            method_exists( 'Automattic\WooCommerce\Utilities\OrderUtil', 'custom_orders_table_usage_is_enabled' ) &&
                            \Automattic\WooCommerce\Utilities\OrderUtil::custom_orders_table_usage_is_enabled();
-        } catch ( Exception $e ) {
-            // HPOS check failed, default to false (legacy mode)
+        } catch ( Throwable $e ) {
             $hpos_enabled = false;
         }
 
         // STABILITY: Use low priority to avoid conflicts with other plugins
         // Primary hook for order status changes - works for both HPOS and legacy
+        // Now handles ALL WooCommerce statuses (including custom from AST, ParcelPanel, ShipStation)
+        // plus user-created custom notification types from the admin modal.
         add_action( 'woocommerce_order_status_changed', array( $this, 'handle_order_status_change' ), 999, 4 );
-
-        // Add backup hooks for specific statuses with low priority
-        add_action( 'woocommerce_order_status_cancelled', array( $this, 'handle_order_cancelled' ), 999, 2 );
-        add_action( 'woocommerce_order_status_failed', array( $this, 'handle_order_failed' ), 999, 2 );
-        add_action( 'woocommerce_order_status_processing', array( $this, 'handle_order_processing' ), 999, 2 );
-        add_action( 'woocommerce_order_status_shipped', array( $this, 'handle_order_shipped' ), 999, 2 );
 
         // Legacy fallback for non-HPOS installations
         if ( ! $hpos_enabled ) {
@@ -102,75 +97,96 @@ class Broodle_Engage_Notifications {
 
         // Wrap everything in try-catch to prevent breaking WooCommerce
         try {
+            // Normalize status: remove 'wc-' prefix consistently for all comparisons
+            $clean_status = str_replace( 'wc-', '', $new_status );
 
-        // Get settings to check status mapping
-        $settings = Broodle_Engage_Settings::get_settings();
-        $status_mapping = $settings['status_mapping'] ?? array();
+            // Track which notification types we've already triggered to prevent duplicates.
+            $triggered = array();
 
-        // Handle processing status (always triggers processing notification)
-        if ( $new_status === 'processing' ) {
-            $this->handle_order_processing_safe( $order_id, $order );
-        }
+            // Get settings once
+            $settings = Broodle_Engage_Settings::get_settings();
 
-        // Check if this status change should trigger any mapped notifications
-        foreach ( $status_mapping as $notification_type => $mapped_status ) {
-            // Check exact match first
-            if ( $new_status === $mapped_status && ! empty( $mapped_status ) ) {
-                $this->schedule_or_send_notification( $order_id, $notification_type, $order );
+            // 1. Handle processing status (always triggers processing notification).
+            if ( $clean_status === 'processing' ) {
+                $this->handle_order_processing_safe( $order_id, $order );
+                $triggered['order_processing'] = true;
             }
-            // Also check with wc- prefix (some systems might include it)
-            elseif ( $new_status === "wc-{$mapped_status}" && ! empty( $mapped_status ) ) {
-                $this->schedule_or_send_notification( $order_id, $notification_type, $order );
+
+            // 2. Check custom notification statuses created via the admin modal.
+            // This is the key fix: previously custom statuses from admin UI were never triggered.
+            $custom_statuses = $settings['custom_notification_statuses'] ?? array();
+            foreach ( $custom_statuses as $cs ) {
+                if ( empty( $cs['id'] ) || ( $cs['event_type'] ?? '' ) !== 'order' ) {
+                    continue;
+                }
+                $cs_wc_status = str_replace( 'wc-', '', $cs['wc_status'] ?? '' );
+                if ( ! empty( $cs_wc_status ) && $cs_wc_status === $clean_status && ! isset( $triggered[ $cs['id'] ] ) ) {
+                    $this->schedule_or_send_notification( $order_id, $cs['id'], $order );
+                    $triggered[ $cs['id'] ] = true;
+                }
             }
-            // Check without wc- prefix (in case mapped status has it)
-            elseif ( "wc-{$new_status}" === $mapped_status && ! empty( $mapped_status ) ) {
-                $this->schedule_or_send_notification( $order_id, $notification_type, $order );
+
+            // 3. Check status_mapping (legacy setting - saved by admin but previously had no UI).
+            $status_mapping = $settings['status_mapping'] ?? array();
+            foreach ( $status_mapping as $notification_type => $mapped_status ) {
+                if ( empty( $mapped_status ) || isset( $triggered[ $notification_type ] ) ) {
+                    continue;
+                }
+                $clean_mapped = str_replace( 'wc-', '', $mapped_status );
+                if ( $clean_status === $clean_mapped ) {
+                    $this->schedule_or_send_notification( $order_id, $notification_type, $order );
+                    $triggered[ $notification_type ] = true;
+                }
             }
-            // Check for ParcelPanel statuses (pp- prefix)
-            elseif ( ( strpos( $mapped_status, 'pp-' ) === 0 && $new_status === $mapped_status ) ||
-                     ( strpos( $new_status, 'pp-' ) === 0 && $new_status === $mapped_status ) ) {
-                $this->schedule_or_send_notification( $order_id, $notification_type, $order );
+
+            // 4. Standard + shipping plugin status map (filterable via broodle_engage_standard_status_map).
+            // Includes WooCommerce defaults, ParcelPanel, AST, ShipStation, and common shipping statuses.
+            $standard_status_map = apply_filters( 'broodle_engage_standard_status_map', array(
+                // Standard WooCommerce statuses
+                'pending'    => 'order_received',
+                'cancelled'  => 'order_cancelled',
+                'failed'     => 'order_failed',
+                'refunded'   => 'order_refunded',
+                'completed'  => 'order_completed',
+
+                // ParcelPanel statuses
+                'shipped'         => 'order_shipped',
+                'partial-shipped' => 'order_shipped',
+                'delivered'       => 'order_delivered',
+
+                // Advanced Shipment Tracking (AST) statuses
+                'ast-shipped'          => 'order_shipped',
+                'ast-delivered'        => 'order_delivered',
+                'ast-out-for-delivery' => 'order_shipped',
+                'ast-in-transit'       => 'order_shipped',
+                'ast-return-to-sender' => 'order_cancelled',
+
+                // ShipStation statuses
+                'shipstation-shipped' => 'order_shipped',
+                'ss-shipped'          => 'order_shipped',
+
+                // Common shipping statuses
+                'out-for-delivery'      => 'order_shipped',
+                'dispatched'            => 'order_shipped',
+                'in-transit'            => 'order_shipped',
+                'ready-for-pickup'      => 'order_shipped',
+                'pickup-ready'          => 'order_shipped',
+                'picked-up'             => 'order_delivered',
+                'delivered-to-customer' => 'order_delivered',
+            ) );
+
+            if ( isset( $standard_status_map[ $clean_status ] ) ) {
+                $notification_type = $standard_status_map[ $clean_status ];
+                if ( ! isset( $triggered[ $notification_type ] ) ) {
+                    $this->schedule_or_send_notification( $order_id, $notification_type, $order );
+                    $triggered[ $notification_type ] = true;
+                }
             }
-        }
 
-        // Handle other standard statuses
-        $standard_status_map = array(
-            // Standard WooCommerce statuses
-            'cancelled' => 'order_cancelled',
-            'failed' => 'order_failed',
-            'refunded' => 'order_refunded',
-            'completed' => 'order_completed',
-
-            // ParcelPanel statuses (without wc- prefix)
-            'shipped' => 'order_shipped',
-            'partial-shipped' => 'order_shipped',
-            'delivered' => 'order_delivered',
-
-            // Common shipping statuses (without wc- prefix)
-            'out-for-delivery' => 'order_shipped',
-            'dispatched' => 'order_shipped',
-            'in-transit' => 'order_shipped',
-            'ready-for-pickup' => 'order_shipped',
-            'pickup-ready' => 'order_shipped',
-            'picked-up' => 'order_delivered',
-        );
-
-        if ( isset( $standard_status_map[ $new_status ] ) ) {
-            $notification_type = $standard_status_map[ $new_status ];
-            $this->schedule_or_send_notification( $order_id, $notification_type, $order );
-        }
-
-        } catch ( Exception $e ) {
-            // STABILITY: Silently handle exceptions to prevent breaking WooCommerce
-            // Never throw exceptions that could break order processing
-            return;
-        } catch ( Error $e ) {
-            // STABILITY: Handle fatal errors gracefully
-            // Never let PHP errors break WooCommerce functionality
-            return;
         } catch ( Throwable $e ) {
-            // STABILITY: Catch all possible throwables (PHP 7+)
-            // Ultimate safety net to prevent any disruption
+            if ( defined( 'WP_DEBUG' ) && WP_DEBUG ) {
+                error_log( 'Broodle Engage API Error: ' . $e->getMessage() );
+            }
             return;
         }
     }
@@ -222,20 +238,18 @@ class Broodle_Engage_Notifications {
             $this->send_notification_safe( $order_id, $notification_type, $order );
         }
 
-        } catch ( Exception $e ) {
-            // STABILITY: Fallback to immediate sending with safety
+        } catch ( Throwable $e ) {
+            if ( defined( 'WP_DEBUG' ) && WP_DEBUG ) {
+                error_log( 'Broodle Engage API Error: ' . $e->getMessage() );
+            }
             try {
                 $this->send_notification_safe( $order_id, $notification_type, $order );
-            } catch ( Exception $fallback_error ) {
-                // STABILITY: Even fallback failed, exit gracefully
-                return;
             } catch ( Throwable $fallback_error ) {
-                // STABILITY: Ultimate safety for fallback
+                if ( defined( 'WP_DEBUG' ) && WP_DEBUG ) {
+                    error_log( 'Broodle Engage API Error: ' . $fallback_error->getMessage() );
+                }
                 return;
             }
-        } catch ( Throwable $e ) {
-            // STABILITY: Handle any throwable in main try block
-            return;
         }
     }
 
@@ -295,7 +309,10 @@ class Broodle_Engage_Notifications {
             }
         }
 
-        } catch ( Exception $e ) {
+        } catch ( Throwable $e ) {
+            if ( defined( 'WP_DEBUG' ) && WP_DEBUG ) {
+                error_log( 'Broodle Engage API Error: ' . $e->getMessage() );
+            }
             if ( $log_id ) {
                 Broodle_Engage_Logger::update_log_status( $log_id, Broodle_Engage_Logger::LOG_ERROR, array(), array(), 'Error executing delayed notification: ' . $e->getMessage() );
             }
@@ -347,7 +364,10 @@ class Broodle_Engage_Notifications {
         if ( $processed_count > 0 ) {
         }
 
-        } catch ( Exception $e ) {
+        } catch ( Throwable $e ) {
+            if ( defined( 'WP_DEBUG' ) && WP_DEBUG ) {
+                error_log( 'Broodle Engage API Error: ' . $e->getMessage() );
+            }
         }
     }
 
@@ -458,7 +478,10 @@ class Broodle_Engage_Notifications {
     public function handle_order_received( $order_id, $order = null ) {
         try {
             $this->send_notification( $order_id, 'order_received', $order );
-        } catch ( Exception $e ) {
+        } catch ( Throwable $e ) {
+            if ( defined( 'WP_DEBUG' ) && WP_DEBUG ) {
+                error_log( 'Broodle Engage API Error: ' . $e->getMessage() );
+            }
         }
     }
 
@@ -469,9 +492,7 @@ class Broodle_Engage_Notifications {
      * @param WC_Order $order Order object.
      */
     public function handle_order_processing_safe( $order_id, $order = null ) {
-
-        // Send notification immediately but safely (cron might not work reliably)
-        $this->send_processing_notification_async( $order_id );
+        $this->schedule_or_send_notification( $order_id, 'order_processing', $order );
     }
 
     /**
@@ -499,7 +520,10 @@ class Broodle_Engage_Notifications {
                 $this->send_notification_safe( $order_id, 'order_processing', $order );
             } else {
             }
-        } catch ( Exception $e ) {
+        } catch ( Throwable $e ) {
+            if ( defined( 'WP_DEBUG' ) && WP_DEBUG ) {
+                error_log( 'Broodle Engage API Error: ' . $e->getMessage() );
+            }
         }
     }
 
@@ -664,8 +688,8 @@ class Broodle_Engage_Notifications {
             return;
         }
 
-        // Check if notification already sent
-        if ( Broodle_Engage_Logger::is_notification_sent( $order_id, $template_name ) ) {
+        // Check if notification already sent (checks by notification_type to prevent different types blocking each other)
+        if ( Broodle_Engage_Logger::is_notification_sent( $order_id, $template_name, $notification_type ) ) {
             return;
         }
 
@@ -679,7 +703,8 @@ class Broodle_Engage_Notifications {
                 Broodle_Engage_Logger::LOG_ERROR,
                 array(),
                 array(),
-                __( 'Customer phone number not found.', 'broodle-engage-connector' )
+                __( 'Customer phone number not found.', 'broodle-engage-connector' ),
+                $notification_type
             );
             return;
         }
@@ -699,13 +724,17 @@ class Broodle_Engage_Notifications {
                 'notification_type' => $notification_type,
                 'selected_variables' => $settings['template_variables'][ $notification_type ] ?? array()
             ),
-            array()
+            array(),
+            '',
+            $notification_type
         );
 
             // Send the notification
             $this->send_whatsapp_message( $order_id, $phone_number, $template_name, $template_vars, $log_id );
-        } catch ( Exception $e ) {
-            // Log error but don't break the order process
+        } catch ( Throwable $e ) {
+            if ( defined( 'WP_DEBUG' ) && WP_DEBUG ) {
+                error_log( 'Broodle Engage API Error: ' . $e->getMessage() );
+            }
         }
     }
 
@@ -739,10 +768,12 @@ class Broodle_Engage_Notifications {
             // NEW: Check new template_config first
             $template_config = $settings['template_config'][ $notification_type ] ?? null;
             
-            if ( $template_config ) {
-                // Use new configuration structure
-                if ( empty( $template_config['enabled'] ) ) {
-                    return;
+            if ( $template_config && ! empty( $template_config['template_name'] ) ) {
+                // Use new configuration structure if template name is set
+                // enabled defaults to 'yes' if not explicitly set to 'no'
+                $enabled = $template_config['enabled'] ?? 'yes';
+                if ( 'no' === $enabled || false === $enabled ) {
+                    return; // Only skip if explicitly disabled
                 }
                 $template_name = $template_config['template_name'] ?? '';
                 $template_lang = $template_config['template_lang'] ?? '';
@@ -769,17 +800,19 @@ class Broodle_Engage_Notifications {
             if ( empty( $template_name ) ) {
                 // Use appropriate fallback template based on notification type
                 $fallback_templates = array(
-                    'order_failed' => 'order_failed_default',
-                    'order_cancelled' => 'order_cancelled_default',
+                    'order_failed'     => 'order_failed_default',
+                    'order_cancelled'  => 'order_cancelled_default',
                     'order_processing' => 'order_confirmation',
-                    'order_completed' => 'order_confirmation',
-                    'order_shipped' => 'order_shipped_default',
+                    'order_received'   => 'order_confirmation',
+                    'order_delivered'  => 'order_shipped_default',
+                    'order_completed'  => 'order_confirmation',
+                    'order_shipped'    => 'order_shipped_default',
                 );
                 $template_name = $fallback_templates[ $notification_type ] ?? 'order_confirmation';
             }
 
-            // Check if notification already sent
-            if ( Broodle_Engage_Logger::is_notification_sent( $order_id, $template_name ) ) {
+            // Check if notification already sent (now checks by notification_type too)
+            if ( Broodle_Engage_Logger::is_notification_sent( $order_id, $template_name, $notification_type ) ) {
                 return;
             }
 
@@ -806,7 +839,9 @@ class Broodle_Engage_Notifications {
                     'variable_map' => $variable_map ?? array(),
                     'custom_text_values' => $custom_text_values,
                 ),
-                array()
+                array(),
+                '',
+                $notification_type
             );
 
             if ( ! $log_id ) {
@@ -835,10 +870,10 @@ class Broodle_Engage_Notifications {
             // Send the notification
             $this->send_whatsapp_message( $order_id, $phone_number, $template_name, $template_vars, $log_id, $image_url, $template_lang, $template_body );
 
-        } catch ( Exception $e ) {
-            // Log error with full context
-        } catch ( Error $e ) {
-            // Catch fatal errors too
+        } catch ( Throwable $e ) {
+            if ( defined( 'WP_DEBUG' ) && WP_DEBUG ) {
+                error_log( 'Broodle Engage API Error: ' . $e->getMessage() );
+            }
         }
     }
 
@@ -888,10 +923,10 @@ class Broodle_Engage_Notifications {
             // Fire action for successful notification
             do_action( 'broodle_engage_notification_sent', $order_id, $phone_number, $template_name, $response );
         }
-        } catch ( Exception $e ) {
-            // STABILITY: Handle exceptions without breaking order processing
-
-            // Safely update log with error
+        } catch ( Throwable $e ) {
+            if ( defined( 'WP_DEBUG' ) && WP_DEBUG ) {
+                error_log( 'Broodle Engage API Error: ' . $e->getMessage() );
+            }
             if ( $log_id ) {
                 try {
                     Broodle_Engage_Logger::update_log_status(
@@ -901,24 +936,8 @@ class Broodle_Engage_Notifications {
                         array(),
                         $e->getMessage()
                     );
-                } catch ( Exception $log_error ) {
-                    // Even logging failed, but don't break anything
+                } catch ( Throwable $log_error ) {
                     return;
-                }
-            }
-        } catch ( Throwable $e ) {
-            // STABILITY: Ultimate safety net for any throwable
-            if ( $log_id ) {
-                try {
-                    Broodle_Engage_Logger::update_log_status(
-                        $log_id,
-                        Broodle_Engage_Logger::LOG_ERROR,
-                        array(),
-                        array(),
-                        'Unexpected error occurred'
-                    );
-                } catch ( Exception $log_error ) {
-                    // Silently fail to prevent any disruption
                 }
             }
             return;
@@ -1154,6 +1173,7 @@ class Broodle_Engage_Notifications {
      */
     private function prepare_variables_from_mapping( $order, $variable_map, $custom_text_values = array() ) {
         $template_vars = array();
+        $max_index = 0;
         
         // Sort by variable number (var_1, var_2, etc.)
         ksort( $variable_map );
@@ -1175,14 +1195,13 @@ class Broodle_Engage_Notifications {
             
             // Ensure we fill the array in correct positions (0-indexed)
             $template_vars[ $var_num - 1 ] = $value;
+            $max_index = max( $max_index, $var_num - 1 );
         }
         
-        // Re-index the array to ensure consecutive values
+        // Build sequential array preserving positions — fill gaps with '---'
         $final_vars = array();
-        for ( $i = 0; $i < count( $template_vars ) + 1; $i++ ) {
-            if ( isset( $template_vars[ $i ] ) && ! empty( $template_vars[ $i ] ) ) {
-                $final_vars[] = $template_vars[ $i ];
-            }
+        for ( $i = 0; $i <= $max_index; $i++ ) {
+            $final_vars[] = isset( $template_vars[ $i ] ) && ! empty( $template_vars[ $i ] ) ? $template_vars[ $i ] : '---';
         }
         
         return $final_vars;
@@ -1487,9 +1506,15 @@ class Broodle_Engage_Notifications {
             return;
         }
 
-        // Prepare template variables
-        $template_vars = json_decode( $log->response_data, true );
-        $template_vars = $template_vars['template_vars'] ?? array();
+        // response_data may have been overwritten by update_log_status on error.
+        // Try to extract template_vars; if missing, re-derive from the order.
+        $template_vars = array();
+        $response_data = json_decode( $log->response_data, true );
+        if ( ! empty( $response_data['template_vars'] ) ) {
+            $template_vars = $response_data['template_vars'];
+        } elseif ( ! empty( $log->notification_type ) ) {
+            $template_vars = $this->prepare_template_variables( $order, $log->notification_type );
+        }
 
         // Retry sending
         $this->send_whatsapp_message( $order_id, $log->phone_number, $log->template_name, $template_vars, $log_id );
@@ -1597,8 +1622,8 @@ class Broodle_Engage_Notifications {
         if ( ! $order ) {
             try {
                 $order = wc_get_order( $order_id );
-            } catch ( Exception $e ) {
-                return false; // Failed to get order, skip processing
+            } catch ( Throwable $e ) {
+                return false;
             }
         }
 
@@ -1618,8 +1643,8 @@ class Broodle_Engage_Notifications {
             if ( in_array( $status, array( 'auto-draft', 'draft', 'trash' ), true ) ) {
                 return false;
             }
-        } catch ( Exception $e ) {
-            return false; // Failed to get status, skip processing
+        } catch ( Throwable $e ) {
+            return false;
         }
 
         // STABILITY: Skip processing during payment gateway operations
@@ -1639,8 +1664,7 @@ class Broodle_Engage_Notifications {
         // STABILITY: Allow filtering by other plugins with error handling
         try {
             return apply_filters( 'broodle_engage_should_process_order', true, $order_id, $order );
-        } catch ( Exception $e ) {
-            // If filter throws exception, default to true to maintain functionality
+        } catch ( Throwable $e ) {
             return true;
         }
     }

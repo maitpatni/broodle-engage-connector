@@ -100,7 +100,7 @@ class Broodle_Engage_Settings {
                 'order_refunded' => 'Hi {{1}}, your order #{{2}} has been refunded. Amount: {{3}}',
             ),
             'phone_field' => 'billing_phone',
-            'country_code' => '+1',
+            'country_code' => '+91',
             'log_retention_days' => 30,
             'retry_attempts' => 3,
             'retry_delay' => 300,
@@ -286,7 +286,7 @@ class Broodle_Engage_Settings {
         }
 
         $sanitized['phone_field'] = sanitize_text_field( $settings['phone_field'] ?? 'billing_phone' );
-        $sanitized['country_code'] = sanitize_text_field( $settings['country_code'] ?? '+1' );
+        $sanitized['country_code'] = sanitize_text_field( $settings['country_code'] ?? '+91' );
         $sanitized['log_retention_days'] = absint( $settings['log_retention_days'] ?? 30 );
         $sanitized['retry_attempts'] = absint( $settings['retry_attempts'] ?? 3 );
         $sanitized['retry_delay'] = absint( $settings['retry_delay'] ?? 300 );

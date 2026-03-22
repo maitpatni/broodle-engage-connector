@@ -20,8 +20,7 @@ class Broodle_Engage_Admin {
      */
     private function user_can_access() {
         return current_user_can( 'manage_woocommerce' ) ||
-               current_user_can( 'manage_options' ) ||
-               current_user_can( 'edit_others_posts' ); // Editor capability
+               current_user_can( 'manage_options' );
     }
 
     /**
@@ -1086,7 +1085,7 @@ class Broodle_Engage_Admin {
                         <label for="country_code"><?php esc_html_e( 'Default Country Code', 'broodle-engage-connector' ); ?></label>
                     </th>
                     <td>
-                        <input type="text" id="country_code" name="broodle_engage_settings[country_code]" value="<?php echo esc_attr( $settings['country_code'] ); ?>" class="small-text" placeholder="+1" />
+                        <input type="text" id="country_code" name="broodle_engage_settings[country_code]" value="<?php echo esc_attr( $settings['country_code'] ); ?>" class="small-text" placeholder="+91" />
                         <p class="description"><?php esc_html_e( 'Default country code to use if not specified in phone number.', 'broodle-engage-connector' ); ?></p>
                     </td>
                 </tr>

@@ -1,30 +1,31 @@
 <?php
 /**
  * Uninstall script for Broodle Engage Connector
- *
- * @package BroodleEngageConnector
+ * Clean up all plugin data on uninstall
  */
 
-// If uninstall not called from WordPress, then exit.
-if ( ! defined( 'WP_UNINSTALL_PLUGIN' ) ) {
+if ( ! defined( 'WP_UNINSTALL_PLUGIN' ) || WP_UNINSTALL_PLUGIN !== plugin_basename( __FILE__ ) ) {
     exit;
 }
 
-// Delete plugin options
+// Delete options
 delete_option( 'broodle_engage_settings' );
+delete_option( 'broodle_engage_api_credentials' );
+delete_option( 'broodle_engage_last_delayed_check' );
+delete_option( 'broodle_engage_db_version' );
 
 // Delete transients
-delete_transient( 'broodle_engage_api_test' );
+delete_transient( 'broodle_engage_api_call_count' );
+delete_transient( 'broodle_engage_api_reset_time' );
+delete_transient( 'broodle_engage_rate_limit_info' );
 
-// Remove scheduled cron jobs
-wp_clear_scheduled_hook( 'broodle_engage_cleanup_logs' );
-
-// Drop custom tables
+// Delete notification logs table
 global $wpdb;
+$table_name = $wpdb->prefix . 'broodle_engage_notifications';
+$wpdb->query( "DROP TABLE IF EXISTS {$table_name}" );
 
-$table_name = esc_sql( $wpdb->prefix . 'broodle_engage_logs' );
-// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching, WordPress.DB.DirectDatabaseQuery.SchemaChange, WordPress.DB.PreparedSQL.InterpolatedNotPrepared
-$wpdb->query( "DROP TABLE IF EXISTS `{$table_name}`" );
+// Delete order meta for all orders
+$wpdb->query( "DELETE FROM {$wpdb->postmeta} WHERE meta_key IN ('_broodle_engage_last_status', '_broodle_engage_notification_sent')" );
 
-// Clear any cached data
-wp_cache_flush();
+// Clear scheduled cron events
+wp_clear_scheduled_hook( 'broodle_engage_send_delayed_notification' );

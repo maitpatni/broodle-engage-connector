@@ -31,6 +31,9 @@ define( 'BROODLE_ENGAGE_PLUGIN_DIR', plugin_dir_path( __FILE__ ) );
 define( 'BROODLE_ENGAGE_PLUGIN_URL', plugin_dir_url( __FILE__ ) );
 define( 'BROODLE_ENGAGE_PLUGIN_BASENAME', plugin_basename( __FILE__ ) );
 
+// DB version for migrations
+define( 'BROODLE_ENGAGE_DB_VERSION', '1.0' );
+
 /**
  * Main plugin class
  */
@@ -59,6 +62,7 @@ class Broodle_Engage_Connector {
      * Constructor
      */
     private function __construct() {
+        add_action( 'plugins_loaded', array( $this, 'check_db_version' ), 5 );
         add_action( 'plugins_loaded', array( $this, 'init' ) );
         register_activation_hook( __FILE__, array( $this, 'activate' ) );
         register_deactivation_hook( __FILE__, array( $this, 'deactivate' ) );
@@ -76,6 +80,9 @@ class Broodle_Engage_Connector {
 
         // Declare HPOS compatibility
         add_action( 'before_woocommerce_init', array( $this, 'declare_hpos_compatibility' ) );
+
+        // Load translations
+        load_plugin_textdomain( 'broodle-engage-connector', false, dirname( BROODLE_ENGAGE_PLUGIN_BASENAME ) . '/languages' );
 
         // Include required files
         $this->includes();
@@ -106,9 +113,6 @@ class Broodle_Engage_Connector {
 
         // Initialize notifications handler
         new Broodle_Engage_Notifications();
-
-        // Clean up any duplicate shipped statuses
-        add_action( 'init', array( $this, 'cleanup_duplicate_statuses' ), 15 );
 
         // Add settings link to plugins page
         add_filter( 'plugin_action_links_' . BROODLE_ENGAGE_PLUGIN_BASENAME, array( $this, 'add_settings_link' ) );
@@ -214,8 +218,8 @@ class Broodle_Engage_Connector {
      * Plugin activation
      */
     public function activate() {
-        // Create database tables
-        $this->create_tables();
+        // Create/update database tables
+        $this->check_db_version();
 
         // Set default options
         $this->set_default_options();
@@ -223,6 +227,17 @@ class Broodle_Engage_Connector {
         // Schedule cleanup cron
         if ( ! wp_next_scheduled( 'broodle_engage_cleanup_logs' ) ) {
             wp_schedule_event( time(), 'daily', 'broodle_engage_cleanup_logs' );
+        }
+    }
+
+    /**
+     * Check DB version and run upgrades if needed
+     */
+    public function check_db_version() {
+        $installed_version = get_option( 'broodle_engage_db_version' );
+        if ( $installed_version !== BROODLE_ENGAGE_DB_VERSION ) {
+            Broodle_Engage_Logger::create_tables();
+            update_option( 'broodle_engage_db_version', BROODLE_ENGAGE_DB_VERSION );
         }
     }
 
@@ -247,6 +262,7 @@ class Broodle_Engage_Connector {
         $sql = "CREATE TABLE $table_name (
             id bigint(20) NOT NULL AUTO_INCREMENT,
             order_id bigint(20) NOT NULL,
+            notification_type varchar(50) DEFAULT NULL,
             phone_number varchar(20) NOT NULL,
             template_name varchar(100) NOT NULL,
             status varchar(20) NOT NULL,
@@ -257,7 +273,8 @@ class Broodle_Engage_Connector {
             PRIMARY KEY (id),
             KEY order_id (order_id),
             KEY status (status),
-            KEY created_at (created_at)
+            KEY created_at (created_at),
+            KEY notification_type (notification_type)
         ) $charset_collate;";
 
         require_once ABSPATH . 'wp-admin/includes/upgrade.php';
@@ -265,6 +282,9 @@ class Broodle_Engage_Connector {
 
         // Check if we need to add the api_response column to existing installations
         $this->maybe_add_api_response_column();
+        
+        // Check if we need to add the notification_type column to existing installations
+        $this->maybe_add_notification_type_column();
     }
 
     /**
@@ -290,6 +310,34 @@ class Broodle_Engage_Connector {
             // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching, WordPress.DB.DirectDatabaseQuery.SchemaChange, WordPress.DB.PreparedSQL.InterpolatedNotPrepared
             $wpdb->query(
                 "ALTER TABLE `" . esc_sql( $table_name ) . "` ADD COLUMN api_response text AFTER response_data"
+            );
+        }
+    }
+
+    /**
+     * Add notification_type column to existing installations
+     * This enables per-notification-type duplicate prevention
+     */
+    private function maybe_add_notification_type_column() {
+        global $wpdb;
+
+        $table_name = $wpdb->prefix . 'broodle_engage_logs';
+
+        // Check if notification_type column exists
+        // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+        $column_exists = $wpdb->get_results(
+            $wpdb->prepare(
+                // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+                "SHOW COLUMNS FROM `" . esc_sql( $table_name ) . "` LIKE %s",
+                'notification_type'
+            )
+        );
+
+        // Add column if it doesn't exist
+        if ( empty( $column_exists ) ) {
+            // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching, WordPress.DB.DirectDatabaseQuery.SchemaChange, WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+            $wpdb->query(
+                "ALTER TABLE `" . esc_sql( $table_name ) . "` ADD COLUMN notification_type varchar(50) DEFAULT NULL AFTER order_id"
             );
         }
     }
@@ -321,7 +369,7 @@ class Broodle_Engage_Connector {
                 'order_refunded' => 'no',
             ),
             'phone_field' => 'billing_phone',
-            'country_code' => '+1',
+            'country_code' => '+91',
             'log_retention_days' => 30,
             'retry_attempts' => 3,
             'retry_delay' => 300, // 5 minutes

@@ -767,6 +767,9 @@ class Broodle_Engage_API {
 
         $response = wp_remote_request( $url, $args );
 
+        // Track API call for rate limiting
+        $this->increment_rate_limit_counter();
+
         if ( is_wp_error( $response ) ) {
             return new WP_Error(
                 'http_request_failed',
@@ -877,7 +880,7 @@ class Broodle_Engage_API {
 
         // If no country code, add default
         if ( 0 !== strpos( $cleaned, '+' ) ) {
-            $default_country_code = Broodle_Engage_Settings::get_setting( 'country_code', '+1' );
+            $default_country_code = Broodle_Engage_Settings::get_setting( 'country_code', '+91' );
             $cleaned = $default_country_code . $cleaned;
         }
 
@@ -962,10 +965,17 @@ class Broodle_Engage_API {
      * @return array
      */
     public function get_rate_limit_info() {
+        $count = (int) get_transient( 'broodle_engage_api_call_count' );
+        $reset_time = (int) get_transient( 'broodle_engage_api_reset_time' );
+
+        if ( ! $reset_time ) {
+            $reset_time = time() + 3600;
+        }
+
         return array(
             'limit'      => 1000,
-            'remaining'  => 950,
-            'reset_time' => time() + 3600,
+            'remaining'  => max( 0, 1000 - $count ),
+            'reset_time' => $reset_time,
         );
     }
 
@@ -975,8 +985,27 @@ class Broodle_Engage_API {
      * @return bool
      */
     public function is_rate_limited() {
-        $rate_limit = $this->get_rate_limit_info();
-        return $rate_limit['remaining'] <= 0;
+        $info = $this->get_rate_limit_info();
+        if ( $info['remaining'] <= 0 && time() < $info['reset_time'] ) {
+            return true;
+        }
+        // Reset counter if window expired
+        if ( time() >= $info['reset_time'] ) {
+            delete_transient( 'broodle_engage_api_call_count' );
+            delete_transient( 'broodle_engage_api_reset_time' );
+        }
+        return false;
+    }
+
+    /**
+     * Increment API call counter for rate limiting
+     */
+    private function increment_rate_limit_counter() {
+        $count = (int) get_transient( 'broodle_engage_api_call_count' );
+        if ( ! $count ) {
+            set_transient( 'broodle_engage_api_reset_time', time() + 3600, 3600 );
+        }
+        set_transient( 'broodle_engage_api_call_count', $count + 1, 3600 );
     }
 
     /**
